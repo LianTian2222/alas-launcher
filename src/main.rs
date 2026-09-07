@@ -23,7 +23,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc, Mutex, OnceLock,
     },
     thread::{self},
     time::{Duration, Instant},
@@ -121,6 +121,86 @@ const PREVIEW_CRASH_ARGS: &[&str] = &[
     "/preview-error",
 ];
 const START_MINIMIZED_ARGS: &[&str] = &["--start-minimized", "/start-minimized"];
+
+// ---------------------------------------------------------------------------
+// 启动器信任免密登录
+//
+// 启动器为每次会话生成一个随机信任密钥，经环境变量 TRUST_SECRET_ENV 注入到
+// gui.py 子进程。WebUI 启动后会据当前 --key / deploy.yaml Password 登记该
+// 密钥；启动器窗口导航前先向后端换发一次性令牌，再进入 /launcher-login 页面
+// 预置登录态实现免密。信任密钥与会话密钥解耦，其它浏览器仍走原密码门禁。
+// 手动 gui.py 启动时密钥未注入，WebUI 端整体关闭该通道。
+// ---------------------------------------------------------------------------
+pub(crate) const TRUST_SECRET_ENV: &str = "ALAS_WEBUI_TRUST_SECRET";
+const TRUST_SECRET_LENGTH: usize = 24;
+const TRUST_LOGIN_TIMEOUT: Duration = Duration::from_secs(3);
+
+static LAUNCHER_TRUST_SECRET: OnceLock<String> = OnceLock::new();
+
+/// 生成（首次）并返回本次会话的启动器信任密钥。
+pub(crate) fn launcher_trust_secret() -> &'static str {
+    LAUNCHER_TRUST_SECRET.get_or_init(|| {
+        use rand::RngCore;
+        let mut bytes = [0u8; TRUST_SECRET_LENGTH];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        BASE64_STANDARD.encode(bytes)
+    })
+}
+
+/// 计算主窗口应导航到的后端地址：若后端支持启动器免密（本机回环 + 密钥匹配），
+/// 则返回带一次性令牌的 /launcher-login 页面；否则回退普通后端首页，维持原有
+/// 登录行为。本函数不抛错，任何失败都静默回退。
+fn webui_navigate_url(port: u16) -> String {
+    let fallback = || backend_url(port);
+    let secret = launcher_trust_secret();
+    let client = match Client::builder()
+        .timeout(TRUST_LOGIN_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return fallback(),
+    };
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/api/launcher/trusted-login"))
+        .header("X-Webui-Launcher-Secret", secret)
+        .send();
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        _ => return fallback(),
+    };
+    // reqwest 未启用 json feature，手动解析 body。
+    let body_text = match response.text() {
+        Ok(body_text) => body_text,
+        Err(_) => return fallback(),
+    };
+    let body: serde_json::Value = match serde_json::from_str(&body_text) {
+        Ok(body) => body,
+        Err(_) => return fallback(),
+    };
+    let Some(token) = body.get("token").and_then(|token| token.as_str()) else {
+        return fallback();
+    };
+    if token.is_empty() {
+        return fallback();
+    }
+    // 令牌为 URL-safe 随机串（secrets.token_urlsafe），可直接置于 query。
+    format!("http://127.0.0.1:{port}/launcher-login?token={token}")
+}
+
+/// URL 的日志安全形式：只保留 scheme/host/port/path，剔除 query，避免
+/// /launcher-login 的一次性令牌经日志落盘。
+fn redacted_url_log(url: &Url) -> String {
+    let Some(host) = url.host_str() else {
+        return url.to_string();
+    };
+    let mut out = format!("{}://{}", url.scheme(), host);
+    if let Some(port) = url.port() {
+        out.push(':');
+        out.push_str(&port.to_string());
+    }
+    out.push_str(url.path());
+    out
+}
 
 struct ExitControl(Arc<AtomicBool>);
 
@@ -2538,8 +2618,12 @@ async fn retry_backend_connection(
     window: WebviewWindow,
     port: u16,
 ) -> std::result::Result<bool, String> {
-    let connected = tauri::async_runtime::spawn_blocking(move || {
-        wait_for_backend_connection(port, BACKEND_NAVIGATION_TIMEOUT).is_ok()
+    // 等待与换发免密令牌均含阻塞调用，统一放在阻塞线程中执行。
+    let target_url = tauri::async_runtime::spawn_blocking(move || {
+        if wait_for_backend_connection(port, BACKEND_NAVIGATION_TIMEOUT).is_err() {
+            return None;
+        }
+        Some(webui_navigate_url(port))
     })
     .await
     .map_err(|e| {
@@ -2547,11 +2631,11 @@ async fn retry_backend_connection(
         e.to_string()
     })?;
 
-    if !connected {
+    let Some(target_url) = target_url else {
         return Ok(false);
-    }
+    };
 
-    let url = Url::parse(&backend_url(port)).map_err(|e| e.to_string())?;
+    let url = Url::parse(&target_url).map_err(|e| e.to_string())?;
     window.navigate(url).map_err(|e| {
         error!("Failed to navigate to reconnected backend: {e:?}");
         e.to_string()
@@ -2563,7 +2647,7 @@ fn page_load_injector(webview: WebviewWindow, payload: PageLoadPayload<'_>) {
     if payload.event() == PageLoadEvent::Finished {
         info!(
             "Injecting saveFile function to loaded page: {}",
-            payload.url()
+            redacted_url_log(payload.url())
         );
         let injected_js = r#"
 if (!window.alas_launcher_injected) {
@@ -2694,7 +2778,7 @@ fn wait_for_backend_connection(port: u16, timeout: Duration) -> Result<()> {
 fn navigate_backend_or_error(window: &WebviewWindow, port: u16) -> Result<bool> {
     match wait_for_backend_connection(port, BACKEND_NAVIGATION_TIMEOUT) {
         Ok(()) => {
-            let url = backend_url(port);
+            let url = webui_navigate_url(port);
             window.navigate(Url::parse(&url)?)?;
             Ok(true)
         }
@@ -2764,7 +2848,7 @@ fn handle_backend_navigation(app: tauri::AppHandle, port: u16, url: &Url) -> boo
     match check_backend_connection(port) {
         Ok(()) => true,
         Err(e) => {
-            let blocked_url = url.to_string();
+            let blocked_url = redacted_url_log(url);
             warn!(
                 "Blocked navigation to unreachable backend {}: {:?}",
                 blocked_url, e
