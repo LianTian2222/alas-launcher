@@ -5,6 +5,7 @@ mod autostart;
 mod backend;
 mod i18n;
 mod launcher_control;
+mod nodejs;
 mod notify;
 mod setup;
 mod window_util;
@@ -59,8 +60,9 @@ use tauri::{
     webview::{PageLoadEvent, PageLoadPayload},
     Manager, State, Url, WebviewWindow,
 };
-use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_dialog::FilePath;
+use tauri_plugin_dialog::{DialogExt, FilePath};
+#[cfg(windows)]
+use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
 use tempfile::Builder as TempDirBuilder;
 use tracing::{debug, error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -1870,6 +1872,78 @@ fn set_macos_activation_policy(app: &tauri::AppHandle, regular: bool) {
     }
 }
 
+#[cfg(windows)]
+fn prompt_for_missing_nodejs(
+    app_handle: &tauri::AppHandle,
+    splash: &WebviewWindow,
+    mut status_updater: &mut impl FnMut(SplashUpdate),
+    cancel_requested: &AtomicBool,
+    start_minimized: bool,
+) -> bool {
+    if crate::nodejs::is_nodejs_available() {
+        return true;
+    }
+    if cancel_requested.load(Ordering::SeqCst) {
+        return false;
+    }
+
+    warn!("Node.js was not found on this Windows system");
+    if start_minimized {
+        let _ = reveal_window(splash);
+    }
+    status_updater(SplashUpdate::loading(
+        t!("setup.checking_nodejs"),
+        t!("setup.checking_nodejs"),
+        5,
+    ));
+
+    let install_requested = app_handle
+        .dialog()
+        .message(t!("dialog.nodejs_missing_message"))
+        .title(t!("dialog.nodejs_missing_title"))
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            t!("dialog.nodejs_install").to_string(),
+            t!("dialog.nodejs_not_now").to_string(),
+        ))
+        .parent(splash)
+        .blocking_show();
+    if !install_requested {
+        info!("Node.js installation was declined by the user");
+        return true;
+    }
+
+    match crate::nodejs::install_nodejs(cancel_requested, &mut status_updater) {
+        Ok(()) => {
+            info!("Node.js installation completed successfully");
+            true
+        }
+        Err(_) if cancel_requested.load(Ordering::SeqCst) => false,
+        Err(error) => {
+            error!("Node.js installation failed: {error:#}");
+            status_updater(SplashUpdate::error(
+                t!("dialog.nodejs_install_failed"),
+                t!(
+                    "dialog.nodejs_install_failed_detail",
+                    error = format!("{error:#}")
+                ),
+                7,
+            ));
+            app_handle
+                .dialog()
+                .message(t!(
+                    "dialog.nodejs_install_failed_detail",
+                    error = format!("{error:#}")
+                ))
+                .title(t!("dialog.nodejs_install_failed"))
+                .kind(MessageDialogKind::Error)
+                .parent(splash)
+                .blocking_show();
+            true
+        }
+    }
+}
+
 fn main() -> Result<()> {
     #[cfg(windows)]
     if try_apply_launcher_update_from_args()? {
@@ -2189,6 +2263,23 @@ fn main() -> Result<()> {
                             setup_running.store(false, Ordering::SeqCst);
                             return;
                         }
+
+                        #[cfg(windows)]
+                        if !prompt_for_missing_nodejs(
+                            &app_handle,
+                            &splash,
+                            &mut status_updater,
+                            &setup_cancel_requested,
+                            start_minimized,
+                        ) {
+                            setup_running.store(false, Ordering::SeqCst);
+                            return;
+                        }
+                        if setup_cancel_requested.load(Ordering::SeqCst) {
+                            setup_running.store(false, Ordering::SeqCst);
+                            return;
+                        }
+
                         if let Err(e) = setup_alas_repo(
                             &mut status_updater,
                             setup_cancel_requested.clone(),
