@@ -1105,7 +1105,6 @@ fn uv_sync_project(
         }
 
         info!("Syncing dependencies with PyPI index: {index}");
-        remove_uv_lock_for_resolve()?;
         let mut cmd = uv_sync_command(&bootstrap_uv, index);
         status_updater(dependency_start_update());
 
@@ -1154,17 +1153,6 @@ fn uv_sync_command_with_paths(
     uv_python_env_with_install_dir(&mut cmd, python_install_dir);
     ignore_uv_index_env(&mut cmd);
     cmd
-}
-
-fn remove_uv_lock_for_resolve() -> Result<()> {
-    let lock_path = Path::new("uv.lock");
-    if !lock_path.exists() {
-        return Ok(());
-    }
-    clear_readonly(lock_path)?;
-    fs::remove_file(lock_path).context("Failed to remove uv.lock before dependency resolution")?;
-    info!("Removed uv.lock so uv can regenerate dependency artifact URLs");
-    Ok(())
 }
 
 fn migrate_dependency_config() -> Result<()> {
