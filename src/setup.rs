@@ -454,9 +454,6 @@ pub fn reset_venv_for_rebuild() -> Result<()> {
 }
 
 /// Delete a rebuildable path, treating an absent one as already clean.
-///
-/// `cache/` holds stale runtime records, and both it and `.venv` are recreated on the next
-/// launch, so a failure to delete either is reported but never blocks the rebuild.
 fn remove_rebuildable_entry(path: &Path) -> Result<()> {
     if !path.exists() {
         info!("No {} to remove", path.display());
@@ -1161,12 +1158,10 @@ fn disable_index(
     true
 }
 
-/// Resolve dependencies against `index` alone, rewriting the download URLs stored in uv.lock.
+/// Rewrite the download URLs in `uv.lock` so they resolve against `index` alone.
 ///
-/// The project's `[tool.uv].index` list outranks the command line: whichever entry comes first
-/// wins no matter what `--default-index` says, and changing that flag never makes uv consider
-/// the lock out of date. A config file does override `[tool.uv]`, so the target index travels
-/// through `--config-file` instead — the list cannot interfere and no file lands in the checkout.
+/// The index travels through a temporary config file, which is the only way to outrank the
+/// project's own `[tool.uv]` index list; `--default-index` does not.
 fn uv_relock_project(
     bootstrap_uv: &Path,
     index: &str,
@@ -1193,7 +1188,10 @@ impl UvIndexOverride {
         let dir = std::env::temp_dir().join(format!("azurpilot-relock-{}", std::process::id()));
         fs::create_dir_all(&dir)?;
         let path = dir.join("uv.toml");
-        fs::write(&path, format!("index-url = \"{index}\"\n"))?;
+        if let Err(err) = fs::write(&path, format!("index-url = \"{index}\"\n")) {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(err.into());
+        }
         Ok(Self { dir, path })
     }
 
