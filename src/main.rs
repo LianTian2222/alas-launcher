@@ -35,7 +35,7 @@ use crate::{
     launcher_control::start_launcher_control_stream,
     notify::{start_notify_stream, NotificationClickHandler},
     setup::{
-        cleanup_runtime_for_rebuild, get_deploy_config, rebuild_venv_and_sync_dependencies,
+        get_deploy_config, rebuild_venv_and_sync_dependencies, reset_venv_for_rebuild,
         setup_alas_repo, setup_environment, SplashUpdate,
     },
 };
@@ -302,7 +302,7 @@ fn begin_startup_cleanup(
             warn!("Setup thread did not stop before startup cleanup timeout");
         }
 
-        match cleanup_runtime_for_rebuild() {
+        match reset_venv_for_rebuild() {
             Ok(()) => {
                 info!("Startup cleanup finished; runtime will be rebuilt on next launch");
             }
