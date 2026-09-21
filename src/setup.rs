@@ -185,7 +185,7 @@ fn platform_git_config_path() -> &'static str {
     }
 }
 
-fn alas_repo_dir() -> PathBuf {
+pub fn alas_repo_dir() -> PathBuf {
     // Always check if this is a typical same-folder portable distribution
     let exe_folder = std::env::current_exe()
         .unwrap()
