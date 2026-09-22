@@ -2629,7 +2629,7 @@ fn save_as(app_handle: tauri::AppHandle, filename: &str, data: &str) {
                     let file_path = path
                         .as_ref()
                         .and_then(FilePath::as_path)
-                        .ok_or_else(|| anyhow!("Invalid file path {:?}", &path))?;
+                        .ok_or_else(|| anyhow!(t!("errors.invalid_file_path", path = format!("{:?}", &path))))?;
                     fs::write(file_path, &decoded_data)?;
                     info!("Saved file to {:?}", file_path);
                     Ok(())
@@ -2684,7 +2684,7 @@ fn download_log_file(
                 let file_path = path
                     .as_ref()
                     .and_then(FilePath::as_path)
-                    .ok_or_else(|| anyhow!("Invalid file path {:?}", &path))?;
+                    .ok_or_else(|| anyhow!(t!("errors.invalid_file_path", path = format!("{:?}", &path))))?;
                 fs::write(file_path, &data)?;
                 info!("Saved {} log to {:?}", log_name_for_save, file_path);
                 Ok(())
@@ -2895,7 +2895,13 @@ fn check_backend_connection(port: u16) -> Result<()> {
     let address: SocketAddr = format!("127.0.0.1:{port}").parse()?;
     TcpStream::connect_timeout(&address, BACKEND_CONNECT_TIMEOUT)
         .map(|_| ())
-        .map_err(|e| anyhow!("Unable to connect to local backend at {address}: {e}"))
+        .map_err(|e| {
+        anyhow!(t!(
+            "errors.backend_unreachable",
+            address = address.to_string(),
+            error = e.to_string()
+        ))
+    })
 }
 
 /// 未就绪提示与日志中的失败原因合成最终错误：日志里写了原因时一并带出。
@@ -4193,7 +4199,7 @@ fn create_main_window(app: &tauri::AppHandle, port: u16) -> Result<WebviewWindow
         .windows
         .iter()
         .find(|w| w.label == "main")
-        .ok_or_else(|| anyhow!("Main window config not found"))?;
+        .ok_or_else(|| anyhow!(t!("errors.main_window_missing")))?;
 
     let app_for_navigation = app.clone();
     let main_window = tauri::WebviewWindowBuilder::from_config(app, main_config)?

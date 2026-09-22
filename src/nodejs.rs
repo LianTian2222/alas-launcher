@@ -190,7 +190,7 @@ pub enum NodeJsAvailability {
 /// 启动器自有的 Node.js 安装目录，与系统安装完全隔离。
 fn private_nodejs_directory() -> Result<PathBuf> {
     let base = std::env::var_os("ProgramData")
-        .ok_or_else(|| anyhow::anyhow!("Unable to resolve ProgramData directory"))?;
+        .ok_or_else(|| anyhow::anyhow!(t!("errors.programdata_not_found")))?;
     Ok(PathBuf::from(base)
         .join(NODEJS_MACHINE_DIRECTORY)
         .join(NODEJS_PRIVATE_SUBDIRECTORY))
@@ -596,10 +596,10 @@ fn nodejs_installer_for_architecture(architecture: &str) -> Result<NodeJsInstall
 #[cfg(windows)]
 fn validate_nodejs_installer_source(url: &str, digest: &str) -> Result<()> {
     if !url.starts_with("https://") {
-        bail!("Node.js installer URL must use HTTPS");
+        bail!(t!("errors.nodejs_url_not_https"));
     }
     if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("Node.js installer checksum is not a SHA-256 digest");
+        bail!(t!("errors.nodejs_digest_invalid"));
     }
     Ok(())
 }
@@ -722,14 +722,14 @@ fn extract_nodejs_zip(
 
     let status = run_status_command(&mut command, cancel_requested)?;
     if !status.success() {
-        bail!("Node.js extraction exited with {status}");
+        bail!(t!("errors.nodejs_extract_exit", status = status.to_string()));
     }
 
     flatten_single_child_directory(target)?;
 
     let installed = target.join("node.exe");
     if !installed.is_file() {
-        bail!("Node.js archive did not produce {}", installed.display());
+        bail!(t!("errors.nodejs_archive_incomplete", path = installed.display().to_string()));
     }
     Ok(())
 }
@@ -771,7 +771,7 @@ fn windows_temp_directory() -> Result<PathBuf> {
     let system_directory = system_directory()?;
     let windows_directory = system_directory
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("Unable to locate the Windows directory"))?;
+        .ok_or_else(|| anyhow::anyhow!(t!("errors.windows_dir_not_found")))?;
     let temp_directory = windows_directory.join("Temp");
     if temp_directory.is_dir() {
         return Ok(temp_directory);
@@ -788,7 +788,7 @@ fn system_directory() -> Result<PathBuf> {
     loop {
         let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
         if length == 0 {
-            bail!("Unable to locate the Windows system directory");
+            bail!(t!("errors.windows_system_dir_not_found"));
         }
         let length = length as usize;
         if length < buffer.len() {
