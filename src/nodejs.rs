@@ -166,13 +166,7 @@ impl SecureNodeJsInstallerDir {
 #[cfg(windows)]
 impl Drop for SecureNodeJsInstallerDir {
     fn drop(&mut self) {
-        let installer = self.path.join(NODEJS_ARCHIVE_FILE_NAME);
-        if let Err(error) = fs::remove_file(&installer) {
-            if error.kind() != io::ErrorKind::NotFound {
-                warn!(path = %installer.display(), "Unable to remove Node.js installer: {error}");
-            }
-        }
-        if let Err(error) = fs::remove_dir(&self.path) {
+        if let Err(error) = fs::remove_dir_all(&self.path) {
             if error.kind() != io::ErrorKind::NotFound {
                 warn!(path = %self.path.display(), "Unable to remove Node.js installer directory: {error}");
             }
@@ -863,6 +857,19 @@ fn secure_directory_suffix() -> String {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn secure_installer_dir_removes_downloaded_msi_on_drop() {
+        let directory = SecureNodeJsInstallerDir::new().expect("create secure installer directory");
+        let path = directory.path().to_path_buf();
+        fs::write(path.join(NODEJS_MSI_FILE_NAME), b"installer payload")
+            .expect("write installer payload");
+
+        drop(directory);
+
+        assert!(!path.exists(), "installer directory should be removed on drop");
+    }
 
     #[test]
     fn test_nodejs_installer_source_requires_https_and_sha256() {
