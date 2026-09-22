@@ -1491,6 +1491,18 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn backend_unready_error_carries_the_reason_from_the_log() {
+        let with_reason = backend_unready_error(
+            anyhow!("connect failed"),
+            Some("React 前端构建失败".to_owned()),
+        );
+        assert!(format!("{with_reason:#}").contains("React 前端构建失败"));
+
+        let without_reason = backend_unready_error(anyhow!("connect failed"), None);
+        assert_eq!(format!("{without_reason:#}"), "connect failed");
+    }
+
     fn test_english_splash_i18n_uses_json_literals() {
         rust_i18n::set_locale("en");
 
@@ -2886,6 +2898,18 @@ fn check_backend_connection(port: u16) -> Result<()> {
         .map_err(|e| anyhow!("Unable to connect to local backend at {address}: {e}"))
 }
 
+/// 未就绪提示与日志中的失败原因合成最终错误：日志里写了原因时一并带出。
+fn backend_unready_error(timeout_error: anyhow::Error, reason: Option<String>) -> anyhow::Error {
+    match reason {
+        Some(reason) => anyhow!(t!(
+            "errors.backend_unready_with_reason",
+            error = format!("{timeout_error:#}"),
+            reason = reason
+        )),
+        None => timeout_error,
+    }
+}
+
 fn wait_for_backend_connection(port: u16, timeout: Duration) -> Result<()> {
     let started_at = Instant::now();
     let mut last_error = None;
@@ -2899,7 +2923,11 @@ fn wait_for_backend_connection(port: u16, timeout: Duration) -> Result<()> {
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow!(t!("errors.backend_timeout"))))
+    let timeout_error = last_error.unwrap_or_else(|| anyhow!(t!("errors.backend_timeout")));
+    Err(backend_unready_error(
+        timeout_error,
+        crate::backend::read_backend_failure_reason(),
+    ))
 }
 
 fn navigate_backend_or_error(window: &WebviewWindow, port: u16) -> Result<bool> {

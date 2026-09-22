@@ -155,7 +155,7 @@ impl SecureNodeJsInstallerDir {
             }
         }
 
-        bail!("Unable to allocate a protected Node.js installer directory")
+        bail!(t!("errors.nodejs_installer_dir"))
     }
 
     fn path(&self) -> &Path {
@@ -374,7 +374,7 @@ fn install_nodejs_system_wide(
         return Ok(());
     }
 
-    bail!("Node.js installer finished, but node.exe was not found in the current process environment")
+    bail!(t!("errors.nodejs_exe_missing"))
 }
 
 #[cfg(windows)]
@@ -409,7 +409,7 @@ fn run_nodejs_installer(
             if status.success() || status.code() == Some(3010) {
                 return Ok(());
             }
-            bail!("Node.js installer exited with {status}");
+            bail!(t!("errors.nodejs_installer_exit", status = status.to_string()));
         }
 
         wait_ticks = wait_ticks.saturating_add(1);
@@ -433,7 +433,7 @@ fn system_msiexec_path() -> Result<PathBuf> {
     if msiexec.is_file() {
         return Ok(msiexec);
     }
-    bail!("Windows Installer was not found at {}", msiexec.display());
+    bail!(t!("errors.msiexec_not_found", path = msiexec.display().to_string()));
 }
 
 #[cfg(windows)]
@@ -443,7 +443,7 @@ fn system_powershell_path() -> Result<PathBuf> {
     let length = loop {
         let length = unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
         if length == 0 {
-            bail!("Unable to locate the Windows directory");
+            bail!(t!("errors.windows_dir_not_found"));
         }
         let length = length as usize;
         if length < buffer.len() {
@@ -460,7 +460,7 @@ fn system_powershell_path() -> Result<PathBuf> {
     if powershell.is_file() {
         return Ok(powershell);
     }
-    bail!("Windows PowerShell was not found at {}", powershell.display());
+    bail!(t!("errors.powershell_not_found", path = powershell.display().to_string()));
 }
 
 #[cfg(windows)]
