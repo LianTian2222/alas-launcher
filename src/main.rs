@@ -1949,7 +1949,7 @@ fn prompt_for_missing_nodejs(
         return true;
     }
 
-    match crate::nodejs::install_nodejs(cancel_requested, &mut status_updater) {
+    match crate::nodejs::install_nodejs(&availability, cancel_requested, &mut status_updater) {
         Ok(()) => {
             info!("Node.js installation completed successfully");
             true
@@ -4390,7 +4390,18 @@ fn main_window_titlebar_injection_script() -> String {
                 if (event.key === 'Escape' && closeMenu.classList.contains('is-open')) setCloseMenuOpen(false);
             });
             const interactiveSelector = 'a[href],button,input,select,textarea,summary,label[for],[role="button"],[role="link"],[contenteditable="true"],[tabindex]:not([tabindex="-1"]),[onclick]';
+            if (webviewDraggableRegionsEnabled) {
+                // Draggable regions swallow pointer events; no-drag holes keep the app controls clickable while the strip drags the window.
+                const noDragStyle = document.createElement('style');
+                noDragStyle.id = 'alas-launcher-no-drag-style';
+                noDragStyle.textContent = interactiveSelector + ',[data-alas-no-drag]{app-region:no-drag;-webkit-app-region:no-drag}'
+                    + '#alas-launcher-titlebar .alas-titlebar-drag-zone,#alas-launcher-titlebar .alas-titlebar-drag-segment{pointer-events:none;app-region:drag;-webkit-app-region:drag}'
+                    + '#alas-launcher-titlebar .alas-titlebar-drag-zone{user-select:none}';
+                document.head.appendChild(noDragStyle);
+            }
+            let lastDragSegmentKey = '';
             const rebuildDragSegments = () => {
+                if (webviewDraggableRegionsEnabled) return;
                 const dragRect = dragZone.getBoundingClientRect();
                 const dragWidth = Math.max(0, dragRect.width);
                 const exclusions = [];
@@ -4410,6 +4421,11 @@ fn main_window_titlebar_injection_script() -> String {
                     if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
                     else merged.push(interval);
                 });
+                // Segments are a pure function of the merged intervals and the available width;
+                // identical input means the DOM already matches, so skip the rewrite.
+                const dragSegmentKey = dragWidth + '|' + merged.map(interval => interval[0] + ':' + interval[1]).join(',');
+                if (dragSegmentKey === lastDragSegmentKey) return;
+                lastDragSegmentKey = dragSegmentKey;
                 const fragment = document.createDocumentFragment();
                 const appendSegment = (left, right) => {
                     if (right - left < 4) return;
@@ -4442,7 +4458,18 @@ fn main_window_titlebar_injection_script() -> String {
                 attributes: true,
                 attributeFilter: ['class', 'style', 'hidden', 'disabled', 'href', 'role', 'tabindex'],
             });
-            document.addEventListener('scroll', scheduleDragSegmentRebuild, { capture: true, passive: true });
+            // Only a scroll that moves content under the fixed titlebar can change the drag zones;
+            // a container lying entirely outside that band leaves the segments as they are.
+            const scrollAffectsTitlebar = event => {
+                const target = event.target;
+                if (!(target instanceof Element) || target === document.documentElement || target === document.body) return true;
+                const rect = target.getBoundingClientRect();
+                const band = dragZone.getBoundingClientRect();
+                return rect.bottom > band.top && rect.top < band.bottom && rect.right > band.left && rect.left < band.right;
+            };
+            document.addEventListener('scroll', event => {
+                if (scrollAffectsTitlebar(event)) scheduleDragSegmentRebuild();
+            }, { capture: true, passive: true });
             rebuildDragSegments();
             const syncMaximizeState = async () => {
                 if (!maximizeButton) return;
